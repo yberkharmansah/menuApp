@@ -258,7 +258,15 @@ cd admin-panel
 # npm run dev
 ```
 
-> Windows'ta SWC hatası alırsanız `npm run dev` komutu zaten `NEXT_DISABLE_SWC=1` ile çalışacak şekilde ayarlanmıştır.
+> Windows'ta SWC hatası alırsanız `npm run dev` komutu zaten `NEXT_DISABLE_SWC=1` + `NEXT_FORCE_BABEL=1` ile çalışacak şekilde ayarlanmıştır.
+
+**Windows SWC sorun giderme (admin-panel)**  
+1. 64-bit Node.js kullandığınızdan emin olun (32-bit Node SWC hatası verir).  
+2. `admin-panel` içinde `node_modules` ve `package-lock.json` dosyasını silip yeniden kurun:  
+   ```bash
+   rm -rf node_modules package-lock.json
+   npm install
+   ```
 
 ### Public View (Next.js)
 ```bash
