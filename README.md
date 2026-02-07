@@ -258,6 +258,8 @@ cd admin-panel
 # npm run dev
 ```
 
+> Windows'ta SWC hatası alırsanız `npm run dev` komutu zaten `NEXT_DISABLE_SWC=1` ile çalışacak şekilde ayarlanmıştır.
+
 ### Public View (Next.js)
 ```bash
 cd public-view
