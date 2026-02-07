@@ -1,5 +1,10 @@
-using System.Collections.Concurrent;
 using System.Text.Json.Serialization;
+using MenuApp.Api.Api.Contracts;
+using MenuApp.Api.Application.Interfaces;
+using MenuApp.Api.Application.Services;
+using MenuApp.Api.Domain.Entities;
+using MenuApp.Api.Domain.Enums;
+using MenuApp.Api.Infrastructure.Repositories;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -8,255 +13,174 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
 });
 
+builder.Services.AddSingleton<IBusinessRepository, InMemoryBusinessRepository>();
+builder.Services.AddSingleton<IMenuRepository, InMemoryMenuRepository>();
+builder.Services.AddSingleton<ICategoryRepository, InMemoryCategoryRepository>();
+builder.Services.AddSingleton<IProductRepository, InMemoryProductRepository>();
+
+builder.Services.AddSingleton<BusinessService>();
+builder.Services.AddSingleton<MenuService>();
+builder.Services.AddSingleton<CategoryService>();
+builder.Services.AddSingleton<ProductService>();
+builder.Services.AddSingleton<PublicMenuService>();
+
 var app = builder.Build();
 
-app.MapGet("/", () => Results.Ok(new { service = "MenuApp API", version = "0.1.0" }));
+app.MapGet("/", () => Results.Ok(new { service = "MenuApp API", version = "0.2.0" }));
 
-var store = new InMemoryStore();
+var authGroup = app.MapGroup("/api/auth");
 
-app.MapPost("/api/auth/register", (RegisterRequest request) =>
+authGroup.MapPost("/register", (RegisterRequest request, BusinessService businessService) =>
 {
-    var business = store.CreateBusiness(request.BusinessName);
+    var business = businessService.Register(request.BusinessName);
     return Results.Ok(new AuthResponse(business.Id, business.Slug, "demo-token"));
 });
 
-app.MapPost("/api/auth/login", (LoginRequest request) =>
+authGroup.MapPost("/login", (LoginRequest request, BusinessService businessService) =>
 {
-    var business = store.GetBusinessBySlug(request.BusinessSlug);
+    var business = businessService.Login(request.BusinessSlug);
     return business is null
         ? Results.NotFound(new { message = "Business not found" })
         : Results.Ok(new AuthResponse(business.Id, business.Slug, "demo-token"));
 });
 
-app.MapGet("/api/admin/menus", () => Results.Ok(store.Menus));
+var adminGroup = app.MapGroup("/api/admin");
 
-app.MapPost("/api/admin/menus", (CreateMenuRequest request) =>
+adminGroup.MapGet("/businesses", (BusinessService businessService) =>
 {
-    var menu = store.CreateMenu(request.BusinessId, request.Name);
+    return Results.Ok(businessService.List());
+});
+
+adminGroup.MapPut("/businesses/{businessId:guid}/theme", (Guid businessId, UpdateThemeRequest request, BusinessService businessService) =>
+{
+    var business = businessService.GetById(businessId);
+    if (business is null)
+    {
+        return Results.NotFound();
+    }
+
+    var updatedTheme = business.ThemeSettings with
+    {
+        LogoUrl = request.LogoUrl ?? business.ThemeSettings.LogoUrl,
+        PrimaryColor = request.PrimaryColor ?? business.ThemeSettings.PrimaryColor,
+        SecondaryColor = request.SecondaryColor ?? business.ThemeSettings.SecondaryColor,
+        Font = request.Font ?? business.ThemeSettings.Font,
+        Currency = request.Currency ?? business.ThemeSettings.Currency,
+        Language = request.Language ?? business.ThemeSettings.Language
+    };
+
+    var updatedBusiness = businessService.UpdateTheme(businessId, updatedTheme);
+    return Results.Ok(updatedBusiness);
+});
+
+adminGroup.MapGet("/menus", (Guid businessId, MenuService menuService) =>
+{
+    if (businessId == Guid.Empty)
+    {
+        return Results.BadRequest(new { message = "businessId is required" });
+    }
+
+    return Results.Ok(menuService.ListByBusiness(businessId));
+});
+
+adminGroup.MapPost("/menus", (CreateMenuRequest request, MenuService menuService) =>
+{
+    var menu = menuService.Create(request.BusinessId, request.Name);
     return Results.Created($"/api/admin/menus/{menu.Id}", menu);
 });
 
-app.MapGet("/api/admin/menus/{menuId:guid}", (Guid menuId) =>
+adminGroup.MapGet("/menus/{menuId:guid}", (Guid menuId, MenuService menuService) =>
 {
-    var menu = store.Menus.FirstOrDefault(m => m.Id == menuId);
+    var menu = menuService.GetById(menuId);
     return menu is null ? Results.NotFound() : Results.Ok(menu);
 });
 
-app.MapPost("/api/admin/categories", (CreateCategoryRequest request) =>
+adminGroup.MapPost("/menus/{menuId:guid}/publish", (Guid menuId, MenuService menuService) =>
 {
-    var category = store.CreateCategory(request.MenuId, request.Name);
+    var menu = menuService.Publish(menuId);
+    return menu is null ? Results.NotFound() : Results.Ok(menu);
+});
+
+adminGroup.MapGet("/categories", (Guid menuId, CategoryService categoryService) =>
+{
+    if (menuId == Guid.Empty)
+    {
+        return Results.BadRequest(new { message = "menuId is required" });
+    }
+
+    return Results.Ok(categoryService.ListByMenu(menuId));
+});
+
+adminGroup.MapPost("/categories", (CreateCategoryRequest request, CategoryService categoryService) =>
+{
+    var category = categoryService.Create(request.MenuId, request.Name);
     return Results.Created($"/api/admin/categories/{category.Id}", category);
 });
 
-app.MapPatch("/api/admin/categories/{id:guid}", (Guid id, UpdateCategoryRequest request) =>
+adminGroup.MapPatch("/categories/{id:guid}", (Guid id, UpdateCategoryRequest request, CategoryService categoryService) =>
 {
-    var category = store.UpdateCategory(id, request);
+    var category = categoryService.Update(id, request.Name, request.SortOrder, request.IsHidden);
     return category is null ? Results.NotFound() : Results.Ok(category);
 });
 
-app.MapPost("/api/admin/products", (CreateProductRequest request) =>
+adminGroup.MapGet("/products", (Guid menuId, ProductService productService) =>
 {
-    var product = store.CreateProduct(request);
+    if (menuId == Guid.Empty)
+    {
+        return Results.BadRequest(new { message = "menuId is required" });
+    }
+
+    return Results.Ok(productService.ListByMenu(menuId));
+});
+
+adminGroup.MapPost("/products", (CreateProductRequest request, ProductService productService) =>
+{
+    var product = productService.Create(
+        request.MenuId,
+        request.CategoryId,
+        request.Name,
+        request.Description,
+        request.Price,
+        request.Currency,
+        request.ImageUrl,
+        request.Tags,
+        request.Allergens
+    );
+
     return Results.Created($"/api/admin/products/{product.Id}", product);
 });
 
-app.MapPatch("/api/admin/products/{id:guid}", (Guid id, UpdateProductRequest request) =>
+adminGroup.MapPatch("/products/{id:guid}", (Guid id, UpdateProductRequest request, ProductService productService) =>
 {
-    var product = store.UpdateProduct(id, request);
+    var product = productService.Update(
+        id,
+        request.Name,
+        request.Description,
+        request.Price,
+        request.Currency,
+        request.ImageUrl,
+        request.Tags,
+        request.Allergens,
+        request.SortOrder,
+        request.Visibility,
+        request.CategoryId
+    );
+
     return product is null ? Results.NotFound() : Results.Ok(product);
 });
 
-app.MapPost("/api/admin/products/{id:guid}/visibility", (Guid id, UpdateVisibilityRequest request) =>
+adminGroup.MapPost("/products/{id:guid}/visibility", (Guid id, UpdateVisibilityRequest request, ProductService productService) =>
 {
-    var product = store.UpdateVisibility(id, request.Visibility);
+    var product = productService.UpdateVisibility(id, request.Visibility);
     return product is null ? Results.NotFound() : Results.Ok(product);
 });
 
-app.MapPost("/api/admin/menus/{menuId:guid}/publish", (Guid menuId) =>
-{
-    var menu = store.PublishMenu(menuId);
-    return menu is null ? Results.NotFound() : Results.Ok(menu);
-});
+var publicGroup = app.MapGroup("/api/public");
 
-app.MapGet("/api/public/menus/{businessSlug}", (string businessSlug, string? t) =>
+publicGroup.MapGet("/menus/{businessSlug}", (string businessSlug, string? t, PublicMenuService publicMenuService) =>
 {
-    var response = store.GetPublicMenu(businessSlug, t);
-    return response is null ? Results.NotFound() : Results.Ok(response);
+    var snapshot = publicMenuService.GetSnapshot(businessSlug, t);
+    return snapshot is null ? Results.NotFound() : Results.Ok(snapshot);
 });
 
 app.Run();
-
-record RegisterRequest(string BusinessName);
-record LoginRequest(string BusinessSlug);
-record AuthResponse(Guid BusinessId, string BusinessSlug, string Token);
-record CreateMenuRequest(Guid BusinessId, string Name);
-record CreateCategoryRequest(Guid MenuId, string Name);
-record UpdateCategoryRequest(string? Name, int? SortOrder, bool? IsHidden);
-record CreateProductRequest(Guid MenuId, Guid CategoryId, string Name, string? Description, decimal Price, string Currency, string? ImageUrl, string[] Tags, string[] Allergens);
-record UpdateProductRequest(string? Name, string? Description, decimal? Price, string? Currency, string? ImageUrl, string[]? Tags, string[]? Allergens, int? SortOrder, ProductVisibility? Visibility, Guid? CategoryId);
-record UpdateVisibilityRequest(ProductVisibility Visibility);
-
-enum ProductVisibility
-{
-    Active,
-    OutOfStock,
-    Passive
-}
-
-record Business(Guid Id, string Name, string Slug, string? PublicToken);
-record Menu(Guid Id, Guid BusinessId, string Name, bool IsPublished);
-record Category(Guid Id, Guid MenuId, string Name, int SortOrder, bool IsHidden);
-record Product(Guid Id, Guid MenuId, Guid CategoryId, string Name, string? Description, decimal Price, string Currency, string? ImageUrl, string[] Tags, string[] Allergens, int SortOrder, ProductVisibility Visibility);
-
-class InMemoryStore
-{
-    private readonly ConcurrentDictionary<Guid, Business> _businesses = new();
-    private readonly ConcurrentDictionary<Guid, Menu> _menus = new();
-    private readonly ConcurrentDictionary<Guid, Category> _categories = new();
-    private readonly ConcurrentDictionary<Guid, Product> _products = new();
-
-    public IEnumerable<Menu> Menus => _menus.Values;
-
-    public Business CreateBusiness(string name)
-    {
-        var slug = name.Trim().ToLowerInvariant().Replace(" ", "-");
-        var business = new Business(Guid.NewGuid(), name, slug, Guid.NewGuid().ToString("N")[..6]);
-        _businesses[business.Id] = business;
-        return business;
-    }
-
-    public Business? GetBusinessBySlug(string slug)
-    {
-        return _businesses.Values.FirstOrDefault(b => b.Slug == slug);
-    }
-
-    public Menu CreateMenu(Guid businessId, string name)
-    {
-        var menu = new Menu(Guid.NewGuid(), businessId, name, false);
-        _menus[menu.Id] = menu;
-        return menu;
-    }
-
-    public Category CreateCategory(Guid menuId, string name)
-    {
-        var sortOrder = _categories.Values.Count(c => c.MenuId == menuId) + 1;
-        var category = new Category(Guid.NewGuid(), menuId, name, sortOrder, false);
-        _categories[category.Id] = category;
-        return category;
-    }
-
-    public Category? UpdateCategory(Guid id, UpdateCategoryRequest request)
-    {
-        if (!_categories.TryGetValue(id, out var category))
-        {
-            return null;
-        }
-
-        var updated = category with
-        {
-            Name = request.Name ?? category.Name,
-            SortOrder = request.SortOrder ?? category.SortOrder,
-            IsHidden = request.IsHidden ?? category.IsHidden
-        };
-        _categories[id] = updated;
-        return updated;
-    }
-
-    public Product CreateProduct(CreateProductRequest request)
-    {
-        var sortOrder = _products.Values.Count(p => p.CategoryId == request.CategoryId) + 1;
-        var product = new Product(
-            Guid.NewGuid(),
-            request.MenuId,
-            request.CategoryId,
-            request.Name,
-            request.Description,
-            request.Price,
-            request.Currency,
-            request.ImageUrl,
-            request.Tags,
-            request.Allergens,
-            sortOrder,
-            ProductVisibility.Active
-        );
-        _products[product.Id] = product;
-        return product;
-    }
-
-    public Product? UpdateProduct(Guid id, UpdateProductRequest request)
-    {
-        if (!_products.TryGetValue(id, out var product))
-        {
-            return null;
-        }
-
-        var updated = product with
-        {
-            Name = request.Name ?? product.Name,
-            Description = request.Description ?? product.Description,
-            Price = request.Price ?? product.Price,
-            Currency = request.Currency ?? product.Currency,
-            ImageUrl = request.ImageUrl ?? product.ImageUrl,
-            Tags = request.Tags ?? product.Tags,
-            Allergens = request.Allergens ?? product.Allergens,
-            SortOrder = request.SortOrder ?? product.SortOrder,
-            Visibility = request.Visibility ?? product.Visibility,
-            CategoryId = request.CategoryId ?? product.CategoryId
-        };
-
-        _products[id] = updated;
-        return updated;
-    }
-
-    public Product? UpdateVisibility(Guid id, ProductVisibility visibility)
-    {
-        if (!_products.TryGetValue(id, out var product))
-        {
-            return null;
-        }
-
-        var updated = product with { Visibility = visibility };
-        _products[id] = updated;
-        return updated;
-    }
-
-    public Menu? PublishMenu(Guid menuId)
-    {
-        if (!_menus.TryGetValue(menuId, out var menu))
-        {
-            return null;
-        }
-
-        var updated = menu with { IsPublished = true };
-        _menus[menuId] = updated;
-        return updated;
-    }
-
-    public object? GetPublicMenu(string businessSlug, string? token)
-    {
-        var business = GetBusinessBySlug(businessSlug);
-        if (business is null)
-        {
-            return null;
-        }
-
-        if (!string.IsNullOrWhiteSpace(business.PublicToken) && token != business.PublicToken)
-        {
-            return null;
-        }
-
-        var menus = _menus.Values.Where(m => m.BusinessId == business.Id && m.IsPublished).ToList();
-        var categories = _categories.Values.Where(c => menus.Any(m => m.Id == c.MenuId) && !c.IsHidden).ToList();
-        var products = _products.Values.Where(p => categories.Any(c => c.Id == p.CategoryId) && p.Visibility == ProductVisibility.Active).ToList();
-
-        return new
-        {
-            business.Id,
-            business.Name,
-            business.Slug,
-            menus,
-            categories,
-            products
-        };
-    }
-}
